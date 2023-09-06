@@ -1,0 +1,249 @@
+%%%% A 110 LINE TOPOLOGY OPTIMIZATION CODE WITH HEAVISIDE FILTERING Nov, 2010%%%%
+function top88_TCM(nbglr,nbgtb,nelx,nely,rmin,eta,vmax_c,vmax_t,max_iter,...
+    loadcase,vsm,szmv,Rc,cScale,cover)
+
+addpath('MMA','Load Cases')
+
+%% MATERIAL PROPERTIES
+A0 = 1;
+E_c = 100;
+E_t = 2000;
+Emin = 1e-4;
+beta = 0;
+nu = 0.3;
+szmv = szmv*2;
+
+%% PREPARE TRUSS FINITE ELEMENT ANALYSIS
+% DEFINE LOADS AND SUPPORTS
+switch loadcase
+    case 1
+        [F,freedofs,num_nod,nele_t,L,C,S,ele_nod,nod_coor,...
+            ntoud,ntolr,szt,ndof_c,ele_dof_t,mNodes] =...
+            TrussCantilever(nbglr,nbgtb,nelx,nely,cScale,cover);
+     case 2
+        [F,freedofs,num_nod,nele_t,L,C,S,ele_nod,nod_coor,...
+            ntoud,ntolr,szt,ndof_c,ele_dof_t,mNodes] =...
+            TrussMBB(nbglr,nbgtb,nelx,nely);
+    case 3
+        [F,freedofs,num_nod,nele_t,L,C,S,ele_nod,nod_coor,mNodes]...
+            = TrussFrame(nbglr,nbgtb,nelx,nely);
+end
+
+% initial matrix for all matrices
+U=zeros(ndof_c,1);
+stiffness=zeros(ndof_c);
+nod_coor0 = nod_coor;
+L0 = L;
+nmNds = length(mNodes);
+
+%% PREPARE CONTINUUM FINITE ELEMENT ANALYSIS
+A11 = [12  3 -6 -3;  3 12  3  0; -6  3 12 -3; -3  0 -3 12];
+A12 = [-6 -3  0  3; -3 -6 -3 -6;  0 -3 -6  3;  3 -6  3 -6];
+B11 = [-4  3 -2  9;  3 -4 -9  4; -2 -9 -4 -3;  9  4 -3 -4];
+B12 = [ 2 -3  4 -9; -3  2  9 -2;  4  9  2  3; -9 -2  3  2];
+KE = 1/(1-nu^2)/24*([A11 A12;A12' A11]+nu*[B11 B12;B12' B11]);
+nodenrs = reshape(1:(1+nelx)*(1+nely),1+nely,1+nelx);
+edofVec = reshape(2*nodenrs(1:end-1,1:end-1)+1,nelx*nely,1);
+edofMat = repmat(edofVec,1,8)+repmat([0 1 2*nely+[2 3 0 1] -2 -1],nelx*nely,1);
+iK = reshape(kron(edofMat,ones(8,1))',64*nelx*nely,1);
+jK = reshape(kron(edofMat,ones(1,8))',64*nelx*nely,1);
+
+%% PREPARE FILTER
+iH = ones(nelx*nely*(2*(ceil(rmin)-1)+1)^2,1);
+jH = ones(size(iH));
+sH = zeros(size(iH));
+k = 0;
+for i1 = 1:nelx
+  for j1 = 1:nely
+    e1 = (i1-1)*nely+j1;
+    for i2 = max(i1-(ceil(rmin)-1),1):min(i1+(ceil(rmin)-1),nelx)
+      for j2 = max(j1-(ceil(rmin)-1),1):min(j1+(ceil(rmin)-1),nely)
+        e2 = (i2-1)*nely+j2;
+        k = k+1;
+        iH(k) = e1;
+        jH(k) = e2;
+        sH(k) = max(0,rmin-sqrt((i1-i2)^2+(j1-j2)^2));
+      end
+    end
+  end
+end
+H = sparse(iH,jH,sH);
+Hs = sum(H,2);
+
+if vsm == 1
+    H = 1;
+    Hs = 1;
+    eta = 1;
+end
+
+
+%% INITIALIZE ITERATION
+nele_c = nelx*nely;
+x_t = repmat(vmax_t,nele_t,1);      % design variables for truss elements  repmat(vmax_t,nele_t,1);
+x_c = repmat(vmax_c,nely,nelx);      % design variables for continuum
+xTilde = x_c; 
+xPhys = x_c;
+x_p = repmat(0.5,nmNds*2,1); % moving design variables
+x = [reshape(x_c,nele_c,1);x_t;x_p];       % all topop design variables
+
+loop = 0;
+change = 1;
+filename1 = 'dynaline.gif';
+
+%% INITIALIZE MMA OPTIMIZER
+m     = 2;                          % The number of general constraints.
+n     = nele_c+nele_t+length(x_p);  % The number of design variables x_j.
+xmin  = zeros(n,1);                 % Column vector with the lower bounds for the variables x_j.
+xmax  = ones(n,1);                  % Column vector with the upper bounds for the variables x_j.
+xold1 = x(:);                       % xval, one iteration ago (provided that iter>1).
+xold2 = x(:);                       % xval, two iterations ago (provided that iter>2).
+low   = ones(n,1);                  % Column vector with the lower asymptotes from the previous iteration (provided that iter>1).
+upp   = ones(n,1);                  % Column vector with the upper asymptotes from the previous iteration (provided that iter>1).
+move  = 0.05;
+
+a0    = 1;                % The constants a_0 in the term a_0*z.
+a     = zeros(m,1);       % Column vector with the constants a_i in the terms a_i*z.
+c_MMA = 10000*ones(m,1);  % Column vector with the constants c_i in the terms c_i*y_i.
+d     = zeros(m,1);       % Column vector with the constants d_i in the terms 0.5*d_i*(y_i)^2.
+
+%% INITIAL CONFIGURATION
+
+plot_TCM(ntoud,ntolr,szt,szmv,cover,nelx,nely,nod_coor,loop,xPhys,x_t,...
+    ele_nod,nele_t,filename1)
+keyboard
+
+
+%% START ITERATION
+while change > 0.001
+  
+  loop = loop+1;
+
+  %% FE-ANALYSIS
+  % computation of the system stiffness matrix
+
+  % TRUSS K MATRIX
+  % computation of the system stiffness matrix and convolution parameters,
+  % done in separate function for clarity
+  [K_t,dKtdRho,Ke,N,dNdy,dNdx] = trussK(nele_t,C,S,A0,x_t,E_t,L,stiffness,...
+    num_nod,nelx,nely,nod_coor,ele_nod,Rc);
+
+  % CONTINUUM K MATRIX
+  sK = reshape(KE(:)*(Emin+xPhys(:)'.^eta*(E_c-Emin)),64*nele_c,1);
+  K_c = sparse(iK,jK,sK); 
+  K_c = (K_c+K_c')/2;
+
+  % COMBINE TRUSS AND CONTINUUM K MATRICES
+  K = K_c + K_t;
+
+  % solving the partitioned matrix 
+  U(freedofs)=K(freedofs,freedofs)\F(freedofs);
+
+  % OBJECTIVE FUNCTION
+  c = F'*U;
+
+  %% SENSITIVITY CALCULATIONS
+  %CONTINUUM SENSITIVITIES:
+  ce = reshape(sum((U(edofMat)*KE).*U(edofMat),2),nely,nelx);
+  dc_c = -eta*(E_c-Emin)*xPhys.^(eta-1).*ce;
+  dv_c = ones(nely,nelx);
+
+  dx_c = beta*exp(-beta*xTilde)+exp(-beta);
+  dc_c(:) = H*(dc_c(:).*dx_c(:)./Hs);
+  dv_c(:) = H*(dv_c(:).*dx_c(:)./Hs);
+
+  % TRUSS SENSITIVITIES
+  dc_t = sens_obj(nele_t,dKtdRho,U,N);
+  dv_t = L*A0;
+
+  % PLACEMENT SENSITIVITIES
+  [dc_p,dv_p] = sens_xy(U,ele_dof_t,ele_nod,nod_coor,L,Ke,x_t,A0,E_t,...
+        mNodes,szmv,N,dNdx,dNdy,L0,vmax_t);
+
+  % combine design variable sensities
+  dc = [dc_c(:);dc_t;dc_p];
+
+    %% MMA - OPTIMIZE!
+
+%   METHOD OF MOVING ASYMPTOTES
+    xval  = x;                                   % design variables
+    f0val = c;                                   % objective function
+    df0dx = dc;                                  % obj gradient
+    
+    fval_c  = sum(xPhys(:))/(vmax_c*nele_c) - 1;  % calculate contin vol
+    dfdx_c   = dv_c(:)' / (vmax_c*nele_c);        % normalize cont vol sens
+    fval_t  = sum(x_t.*L*A0)-(vmax_t*sum(L0*A0)); % calculate truss vol
+    dfdx_t  = dv_t(:)';                           % format truss topop sens
+
+    fval = [fval_c;fval_t];   
+    dfdx = [ dfdx_c,           zeros(1,nele_t),  zeros(1,nmNds*2)  % continuum vol constr sens
+             zeros(1,nele_c),  dfdx_t,           dv_p'];            % truss vol constr sens
+
+    [xmmap, ~, ~, ~, ~, ~, ~, ~, ~, low,upp] = ...
+    mmasub(m, n, loop, xval, xmin, xmax, xold1, xold2, ...
+    f0val,df0dx,fval,dfdx,low,upp,a0,a,c_MMA,d,beta,move);
+
+    % Update MMA Variables with Normal Weighting Projection
+    xnew     = xmmap;
+
+    xold2    = xold1(:);
+    xold1    = x(:);
+
+    change = max(abs(xnew(:)-x(:))); 
+    x = xnew;   
+
+    %% UPDATE STRUCTURE
+    % redistribute design variable to continuum and truss
+    x_c = x(1:nele_c);
+    x_t = x(nele_c+1:nele_c+nele_t);
+    x_p = x(nele_c+nele_t+1:end);
+
+    %apply new design variable values to xPhys
+    xTilde(:) = (H*x_c(:))./Hs;
+    xPhys = 1-exp(-beta*xTilde)+xTilde*exp(-beta);
+
+    % re-compute node locations
+    [L,C,S,nod_coor] = moveNodes(x_p,nele_t,nod_coor,nod_coor0,szmv,mNodes,ele_nod);
+
+    % PRINT RESULTS
+    plot_TCM(ntoud,ntolr,szt,szmv,cover,nelx,nely,nod_coor,loop,xPhys,...
+        x_t,ele_nod,nele_t,filename1)
+    fprintf(' It.:%5i Obj.:%11.4f Vol C.:%7.3f Vol T.:%7.3f ch.:%7.3f\n',loop,c, ...
+        mean(xPhys(:)),sum(x_t.*L*A0)/(sum(L0*A0)),change);
+
+%% CHECK MAX ITERATION 
+if loop >= max_iter
+    break
+end
+
+
+end
+
+%% FINAL CONFIGURATION
+keyboard
+
+return
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% This Matlab code was written by E. Andreassen, A. Clausen, M. Schevenels,%
+% B. S. Lazarov and O. Sigmund,  Department of Solid  Mechanics,           %
+%  Technical University of Denmark,                                        %
+%  DK-2800 Lyngby, Denmark.                                                %
+% Please sent your comments to: sigmund@fam.dtu.dk                         %
+%                                                                          %
+% The code is intended for educational purposes and theoretical details    %
+% are discussed in the paper                                               %
+% "Efficient topology optimization in MATLAB using 88 lines of code,       %
+% E. Andreassen, A. Clausen, M. Schevenels,                                %
+% B. S. Lazarov and O. Sigmund, Struct Multidisc Optim, 2010               %
+% This version is based on earlier 99-line code                            %
+% by Ole Sigmund (2001), Structural and Multidisciplinary Optimization,    %
+% Vol 21, pp. 120--127.                                                    %
+%                                                                          %
+% The code as well as a postscript version of the paper can be             %
+% downloaded from the web-site: http://www.topopt.dtu.dk                   %
+%                                                                          %
+% Disclaimer:                                                              %
+% The authors reserves all rights but do not guaranty that the code is     %
+% free from errors. Furthermore, we shall not be liable in any event       %
+% caused by the use of the program.                                        %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
