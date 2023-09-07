@@ -15,10 +15,7 @@ Mm = [ 1 0 -1 0;
 % Then dK+/dx computation following Zegard and Paulino 2013
 
 % dK/dx
-temp_df = zeros(nNodes, 1);
-temp_dv_x = zeros(nNodes, 1);
-temp_dv_y = zeros(nNodes, 1);
-parfor ii = 1:length(mNodes)                %PARALLELIZE?!?!?!?
+for ii = 1:length(mNodes)                %PARALLELIZE?!?!?!?
     % All elements attached to node n
     i = mNodes(ii);
     Ev1 = find(ele_nod(:,1)==i);
@@ -161,22 +158,11 @@ parfor ii = 1:length(mNodes)                %PARALLELIZE?!?!?!?
        % then sum all vol gradient calcs to get dVdxi and dVdyi
        dv((ii-1)*2+1) = sum(EvVolSum_x); 
        dv(ii*2)       = sum(EvVolSum_y); 
-    temp_df(ii) = sum(EvSum_x) + sum(EvSum_y);
-    temp_dv_x(ii) = sum(EvVolSum_x);
-    temp_dv_y(ii) = sum(EvVolSum_y)
+
 end
 
 % % scale dv
 % dv = dv/(vmax_t*sum(L0*A0));
-df = temp_df;
-dv = [temp_dv_x; temp_dv_y];
+dv = dv;
 
 end
-
-
-
-
-
-
-
-
