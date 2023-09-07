@@ -15,6 +15,7 @@ szmv = szmv*2;
 
 %% PREPARE TRUSS FINITE ELEMENT ANALYSIS
 % DEFINE LOADS AND SUPPORTS
+tic;
 switch loadcase
     case 1
         [F,freedofs,num_nod,nele_t,L,C,S,ele_nod,nod_coor,...
@@ -28,6 +29,8 @@ switch loadcase
         [F,freedofs,num_nod,nele_t,L,C,S,ele_nod,nod_coor,mNodes]...
             = TrussFrame(nbglr,nbgtb,nelx,nely);
 end
+elapsedTimeLoads = toc;
+fprintf('Time for Defining Loads: %.4f seconds\n', elapsedTimeLoads);
 % initial matrix for all matrices
 U=zeros(ndof_c,1);
 stiffness=zeros(ndof_c);
@@ -116,16 +119,16 @@ keyboard
 while change > 0.001
   
   loop = loop+1;
+tic;
   %% FE-ANALYSIS
   % computation of the system stiffness matrix
-tic;
+
   % TRUSS K MATRIX
   % computation of the system stiffness matrix and convolution parameters,
   % done in separate function for clarity
   [K_t,dKtdRho,Ke,N,dNdy,dNdx] = trussK(nele_t,C,S,A0,x_t,E_t,L,stiffness,...
     num_nod,nelx,nely,nod_coor,ele_nod,Rc);
-elapsedTimetrussK = toc;
-fprintf('Time for trussK: %.4f seconds\n', elapsedTimetrussK);
+
   % CONTINUUM K MATRIX
   sK = reshape(KE(:)*(Emin+xPhys(:)'.^eta*(E_c-Emin)),64*nele_c,1);
   K_c = sparse(iK,jK,sK); 
@@ -149,23 +152,22 @@ fprintf('Time for trussK: %.4f seconds\n', elapsedTimetrussK);
   dx_c = beta*exp(-beta*xTilde)+exp(-beta);
   dc_c(:) = H*(dc_c(:).*dx_c(:)./Hs);
   dv_c(:) = H*(dv_c(:).*dx_c(:)./Hs);
-tic;
+
   % TRUSS SENSITIVITIES
   dc_t = sens_obj(nele_t,dKtdRho,U,N);
   dv_t = L*A0;
-elapsedTimesens_obj = toc;
-fprintf('Time for sens_obj: %.4f seconds\n', elapsedTimesens_obj);
-tic;
+
   % PLACEMENT SENSITIVITIES
   [dc_p,dv_p] = sens_xy(U,ele_nod,nod_coor,L,Ke,x_t,A0,E_t,...
         mNodes,szmv,N,dNdx,dNdy);
-elapsedTimesens_xy = toc;
-fprintf('Time for sens_xy: %.4f seconds\n', elapsedTimesens_xy);
+
   % combine design variable sensities
   dc = [dc_c(:);dc_t;dc_p];
+  elapsedTimeFE = toc;
+  fprintf('Time for FE: %.4f seconds\n', elapsedTimeFE);
 
     %% MMA - OPTIMIZE!
-tic;
+
 %   METHOD OF MOVING ASYMPTOTES
     xval  = x;                                   % design variables
     f0val = c;                                   % objective function
@@ -192,8 +194,7 @@ tic;
 
     change = max(abs(xnew(:)-x(:))); 
     x = xnew;   
-elapsedTimeMMA = toc;
-fprintf('Time for MMA: %.4f seconds\n', elapsedTimeMMA);
+
     %% UPDATE STRUCTURE
     % redistribute design variable to continuum and truss
     x_c = x(1:nele_c);
@@ -203,11 +204,10 @@ fprintf('Time for MMA: %.4f seconds\n', elapsedTimeMMA);
     %apply new design variable values to xPhys
     xTilde(:) = (H*x_c(:))./Hs;
     xPhys = 1-exp(-beta*xTilde)+xTilde*exp(-beta);
-tic;
+
     % re-compute node locations
     [L,C,S,nod_coor] = moveNodes(x_p,nele_t,nod_coor,nod_coor0,szmv,mNodes,ele_nod);
-movenodes = toc;
-fprintf('Time for moving nodes: %.4f seconds\n', movenodes);
+
     % PRINT RESULTS
     plot_TCM(ntoud,ntolr,szt,szmv,cover,nelx,nely,nod_coor,loop,xPhys,...
         x_t,ele_nod,nele_t,filename1)

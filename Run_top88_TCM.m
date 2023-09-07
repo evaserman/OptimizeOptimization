@@ -19,5 +19,5 @@ nelx        = nbglr*cScale+cover;   %number of elements in x
 nely        = nbgtb*cScale+cover*2; %number of elements in y
 
 
-top88_TCM(nbglr,nbgtb,nelx,nely,rmin,eta,vmax_c,vmax_t,max_iter,...
+time_top88(nbglr,nbgtb,nelx,nely,rmin,eta,vmax_c,vmax_t,max_iter,...
     loadcase,vsm,szmv,Rc,cScale,cover)
