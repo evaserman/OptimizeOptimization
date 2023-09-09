@@ -4,7 +4,7 @@ clc
 
 nbglr       = 3;        % number of bays going from left to right
 nbgtb       = 3;        % number of bays going top to bottom
-cScale      = 10;       % number of elements in each bay
+cScale      = 4;       % number of elements in each bay
 szmv        = 4;        % allowable movement distance of each node
 cover       = 5;       % number of elements around border of problem
 rmin        = 2.5;      % minimum feature size
